@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Calm Feed for Android tests</title>
+  <style>
+    body { font: 14px/1.5 system-ui, sans-serif; margin: 16px; }
+    .pass { color: #137333; }
+    .fail { color: #c5221f; font-weight: 600; }
+    #fixtures { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Calm Feed for Android tests</h1>
+  <p id="summary">Running…</p>
+  <ul id="results"></ul>
+  <div id="fixtures"></div>
+
+  <script src="../calm-feed-android.user.js"></script>
+  <script>
+    const { redirectFor, allowRedirect, redirectWorked, findSuggestedBlocks, SETTINGS, SUGGESTED_LABELS } = window.CalmFeed;
+    const results = [];
+    const test = (name, fn) => {
+      try { fn(); results.push([name, null]); } catch (e) { results.push([name, e.message]); }
+    };
+    const eq = (actual, expected) => {
+      if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+        throw new Error(`expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+      }
+    };
+    const memoryStorage = () => {
+      const data = {};
+      return { getItem: k => (k in data ? data[k] : null), setItem: (k, v) => { data[k] = String(v); } };
+    };
+    const fixture = html => {
+      const root = document.getElementById('fixtures');
+      root.innerHTML = html;
+      return root;
+    };
+
+    // Redirects
+    test('home goes to the Following feed', () => eq(redirectFor('/', '', SETTINGS), '/?variant=following'));
+    test('Following feed stays put', () => eq(redirectFor('/', '?variant=following', SETTINGS), null));
+    test('Reels tab goes to the Following feed', () => eq(redirectFor('/reels/', '', SETTINGS), '/?variant=following'));
+    test('scrolling Reels goes to the Following feed', () => eq(redirectFor('/reels/C1abc/', '', SETTINGS), '/?variant=following'));
+    test('a single reel someone sent you still opens', () => eq(redirectFor('/reel/C1abc/', '', SETTINGS), null));
+    test("a friend's Reels tab on their profile still opens", () => eq(redirectFor('/friend/reels/', '', SETTINGS), null));
+    test('Explore grid goes to search', () => eq(redirectFor('/explore/', '', SETTINGS), '/explore/search/'));
+    test('hashtag pages go to search', () => eq(redirectFor('/explore/tags/cats/', '', SETTINGS), '/explore/search/'));
+    test('search stays put', () => eq(redirectFor('/explore/search/', '', SETTINGS), null));
+    test('DMs stay put', () => eq(redirectFor('/direct/inbox/', '', SETTINGS), null));
+    test('profiles stay put', () => eq(redirectFor('/friend/', '', SETTINGS), null));
+    test('with followingFeed off, home stays put', () => eq(redirectFor('/', '', { ...SETTINGS, followingFeed: false }), null));
+    test('with followingFeed off, Reels goes to plain home', () => eq(redirectFor('/reels/', '', { ...SETTINGS, followingFeed: false }), '/'));
+    test('with everything off, nothing redirects', () =>
+      eq(redirectFor('/reels/', '', { followingFeed: false, hideReels: false, hideExplore: false, hideSuggested: false }), null));
+
+    // Loop guard
+    test('a redirect Instagram keeps undoing stops after 3 tries', () => {
+      const s = memoryStorage();
+      eq([1, 2, 3, 4, 5].map(() => allowRedirect('/?variant=following', s)), [true, true, true, false, false]);
+    });
+    test('a redirect that worked is allowed again later', () => {
+      const s = memoryStorage();
+      for (let i = 0; i < 10; i++) {
+        eq(allowRedirect('/?variant=following', s), true);
+        redirectWorked('/?variant=following', s);
+      }
+    });
+    test('a switched-off redirect stays off', () => {
+      const s = memoryStorage();
+      for (let i = 0; i < 4; i++) allowRedirect('/explore/search/', s);
+      redirectWorked('/explore/search/', s);
+      eq(allowRedirect('/explore/search/', s), false);
+    });
+    test('redirects are tracked separately', () => {
+      const s = memoryStorage();
+      for (let i = 0; i < 4; i++) allowRedirect('/explore/search/', s);
+      eq(allowRedirect('/?variant=following', s), true);
+    });
+
+    // Suggested posts
+    test('a suggested post is hidden, normal posts are not', () => {
+      const root = fixture(`
+        <main><div class="feed">
+          <article id="a1"><header><span>friend</span></header><p>Hi</p></article>
+          <article id="a2"><header><span>stranger</span><span> Suggested for you </span></header></article>
+          <article id="a3"><header><span>friend2</span></header></article>
+        </div></main>`);
+      eq(findSuggestedBlocks(root, SUGGESTED_LABELS).map(b => b.id), ['a2']);
+    });
+    test('a "Suggested for you" accounts row between posts is hidden, not the whole feed', () => {
+      const root = fixture(`
+        <main><div class="feed" id="feed">
+          <article id="a1"></article>
+          <div id="carousel"><div><h4>Suggested for you</h4><span>See all</span></div><ul><li>stranger</li></ul></div>
+          <article id="a2"></article>
+        </div></main>`);
+      eq(findSuggestedBlocks(root, SUGGESTED_LABELS).map(b => b.id), ['carousel']);
+    });
+    test('label matching ignores case', () => {
+      const root = fixture(`<div><article id="a1"><span>SUGGESTED POSTS</span></article><article></article></div>`);
+      eq(findSuggestedBlocks(root, SUGGESTED_LABELS).map(b => b.id), ['a1']);
+    });
+    test('a caption that just mentions the words is left alone', () => {
+      const root = fixture(`<div><article id="a1"><span>my friend suggested for you to try this</span></article></div>`);
+      eq(findSuggestedBlocks(root, SUGGESTED_LABELS).length, 0);
+    });
+    test('a label with no posts nearby hides nothing', () => {
+      const root = fixture(`<div><div><span>Suggested for you</span></div></div>`);
+      eq(findSuggestedBlocks(root, SUGGESTED_LABELS).length, 0);
+    });
+    test('already hidden blocks are skipped', () => {
+      const root = fixture(`<div><article data-calm-feed-hidden><span>Suggested for you</span></article><article></article></div>`);
+      eq(findSuggestedBlocks(root, SUGGESTED_LABELS).length, 0);
+    });
+
+    const failed = results.filter(([, err]) => err);
+    document.getElementById('summary').textContent =
+      `${results.length - failed.length} of ${results.length} passed` + (failed.length ? `, ${failed.length} failed` : '');
+    document.getElementById('summary').className = failed.length ? 'fail' : 'pass';
+    document.getElementById('results').innerHTML = results
+      .map(([name, err]) => `<li class="${err ? 'fail' : 'pass'}">${err ? '✗' : '✓'} ${name}${err ? ' — ' + err : ''}</li>`)
+      .join('');
+    window.testResults = { total: results.length, failed: failed.map(([n, e]) => n + ': ' + e) };
+  </script>
+</body>
+</html>
